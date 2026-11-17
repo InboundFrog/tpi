@@ -431,11 +431,15 @@ impl LegacyHandler {
             .mime_str("application/octet-stream")?
             .file_name(file_name);
         let form = reqwest::multipart::Form::new().part("file", part);
-        self.client
-            .post(self.request.url().clone())
-            .multipart(form)
-            .send()
-            .await?;
+
+        let mut request = self.request.to_post()?;
+        *request.url_mut() = self.request.url().clone();
+        request.set_multipart(form);
+
+        let response = request.send(self.client.clone()).await?;
+        if !response.status().is_success() {
+            bail!("upload failed: {}", response.text().await?);
+        }
         Ok(())
     }
 
