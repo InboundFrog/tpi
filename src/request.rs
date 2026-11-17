@@ -77,7 +77,8 @@ impl Request {
     pub async fn send(mut self, client: Client) -> Result<Response> {
         let mut authenticated = cfg!(not(feature = "localhost"));
 
-        let resp = loop {
+        // Attempts: [unauthenticated (localhost only),] cached token, fresh credentials.
+        for _ in 0..3 {
             let mut builder =
                 RequestBuilder::from_parts(client.clone(), self.inner.try_clone().unwrap());
 
@@ -86,20 +87,25 @@ impl Request {
                 builder = builder.bearer_auth(token);
             }
 
+            // A multipart body is a stream and can only be sent once.
+            let has_body = self.multipart.is_some();
             if let Some(form) = self.multipart.take() {
                 builder = builder.multipart(form);
             }
 
             let resp = builder.send().await?;
-            if resp.status() == StatusCode::UNAUTHORIZED {
-                delete_cached_token(&self.host);
-                authenticated = true;
-            } else {
-                break resp;
+            if resp.status() != StatusCode::UNAUTHORIZED {
+                return Ok(resp);
             }
-        };
 
-        Ok(resp)
+            delete_cached_token(&self.host);
+            if has_body {
+                bail!("unauthorized: session expired, run the command again to log in");
+            }
+            authenticated = true;
+        }
+
+        bail!("unauthorized")
     }
 
     async fn get_bearer_token(&mut self, client: &Client) -> Result<String> {
