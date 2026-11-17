@@ -42,11 +42,7 @@ async fn main() -> ExitCode {
     }
 
     if let Err(e) = execute_cli_command(&cli).await {
-        if let Some(error) = e.downcast_ref::<reqwest::Error>() {
-            eprintln!("{error}");
-        } else {
-            eprintln!("{:#}", e);
-        }
+        eprintln!("{:#}", e);
         return ExitCode::FAILURE;
     }
 
