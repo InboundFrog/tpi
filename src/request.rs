@@ -59,7 +59,8 @@ impl Request {
 
     pub fn to_post(&self) -> Result<Self> {
         let url = url_from_host(&self.host, self.ver.scheme())?;
-        let inner = reqwest::Request::new(Method::POST, url);
+        let mut inner = reqwest::Request::new(Method::POST, url);
+        *inner.headers_mut() = self.inner.headers().clone();
 
         Ok(Self {
             host: self.host.clone(),
@@ -298,6 +299,14 @@ fn cache_token(host: &str, token: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn to_post_keeps_headers() {
+        let req = Request::new("bmc".into(), ApiVersion::V1_1, (None, None), "TPI (test)").unwrap();
+        let post = req.to_post().unwrap();
+        assert_eq!(post.method(), Method::POST);
+        assert_eq!(post.headers()[USER_AGENT], "TPI (test)");
+    }
 
     #[test]
     fn cache_file_is_per_host() {
