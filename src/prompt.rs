@@ -16,7 +16,7 @@ use std::io::{stdout, Write};
 
 use anyhow::{ensure, Context, Result};
 use crossterm::cursor::MoveToColumn;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::style::Print;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 use crossterm::{execute, queue};
@@ -54,7 +54,8 @@ impl Prompt {
             self.print()?;
 
             let cont = match event::read().context("failed to get terminal event")? {
-                Event::Key(key) => self.handle_key(key)?,
+                // Windows also reports key releases (e.g. of the Enter that started tpi).
+                Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key)?,
                 _ => true,
             };
 
