@@ -25,6 +25,7 @@ struct Prompt {
     msg: &'static str,
     password: bool,
     input: String,
+    /// Cursor position, counted in chars (not bytes).
     cursor_idx: usize,
 }
 
@@ -98,25 +99,19 @@ impl Prompt {
 
         match key.code {
             KeyCode::Char(c) => {
-                self.input.insert(self.cursor_idx, c);
+                self.input.insert(self.byte_idx(), c);
                 self.cursor_idx += 1;
             }
-            KeyCode::Delete => {
-                if !self.input.is_empty() {
-                    self.delete();
-                }
-            }
+            KeyCode::Delete => self.delete(),
             KeyCode::Backspace => {
-                if !self.input.is_empty() {
+                if self.cursor_idx > 0 {
                     self.left();
                     self.delete();
                 }
             }
             KeyCode::Left => self.left(),
-            KeyCode::Right => {
-                if self.cursor_idx < self.input.len() - 1 {
-                    self.cursor_idx += 1;
-                }
+            KeyCode::Right if self.cursor_idx < self.input.chars().count() => {
+                self.cursor_idx += 1;
             }
             _ => {}
         }
@@ -131,9 +126,16 @@ impl Prompt {
     }
 
     fn delete(&mut self) {
-        if self.cursor_idx < self.input.len() {
-            self.input.remove(self.cursor_idx);
+        if self.cursor_idx < self.input.chars().count() {
+            self.input.remove(self.byte_idx());
         }
+    }
+
+    fn byte_idx(&self) -> usize {
+        self.input
+            .char_indices()
+            .nth(self.cursor_idx)
+            .map_or(self.input.len(), |(i, _)| i)
     }
 }
 
@@ -143,4 +145,47 @@ pub fn simple(msg: &'static str) -> Result<String> {
 
 pub fn password(msg: &'static str) -> Result<String> {
     Prompt::new(msg, true).read()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(p: &mut Prompt, code: KeyCode) {
+        p.handle_key(event::KeyEvent::new(code, KeyModifiers::NONE))
+            .unwrap();
+    }
+
+    #[test]
+    fn editing() {
+        let mut p = Prompt::new("x", true);
+        press(&mut p, KeyCode::Right); // used to underflow on empty input
+        press(&mut p, KeyCode::Backspace);
+        for c in "aé€b".chars() {
+            press(&mut p, KeyCode::Char(c));
+        }
+        assert_eq!(p.input, "aé€b");
+
+        press(&mut p, KeyCode::Left);
+        press(&mut p, KeyCode::Left);
+        press(&mut p, KeyCode::Backspace);
+        assert_eq!(p.input, "a€b");
+
+        press(&mut p, KeyCode::Char('ü'));
+        press(&mut p, KeyCode::Delete);
+        assert_eq!(p.input, "aüb");
+
+        // cursor can reach the end of the input
+        press(&mut p, KeyCode::Right);
+        press(&mut p, KeyCode::Right);
+        press(&mut p, KeyCode::Char('!'));
+        assert_eq!(p.input, "aüb!");
+
+        // backspace at the start is a no-op
+        for _ in 0..10 {
+            press(&mut p, KeyCode::Left);
+        }
+        press(&mut p, KeyCode::Backspace);
+        assert_eq!(p.input, "aüb!");
+    }
 }
