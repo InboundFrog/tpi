@@ -64,7 +64,8 @@ impl PinnedCert {
                 "the BMC's TLS certificate has changed since it was first trusted. \
                  This is expected after reflashing the BMC firmware, but could also \
                  mean someone is intercepting the connection. If you trust the new \
-                 certificate, delete {path} and try again"
+                 certificate, delete {path} and try again, or pass \
+                 --ignore-certificate-pinning to skip this check at your own risk"
             )),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 if let Some(dir) = self.path.parent() {

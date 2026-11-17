@@ -57,6 +57,12 @@ pub struct Cli {
     )]
     pub password: Option<String>,
 
+    /// Accept any TLS certificate from the BMC, including one that differs from the certificate
+    /// trusted on first use. Dangerous: anyone able to intercept the connection can then
+    /// impersonate the BMC and capture your credentials. Use at your own risk.
+    #[arg(long, global = true)]
+    pub ignore_certificate_pinning: bool,
+
     /// Print results formatted as JSON
     #[arg(long, global = true, env = "TPI_OUTPUT_JSON")]
     pub json: bool,

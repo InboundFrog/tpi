@@ -49,7 +49,11 @@ pub struct LegacyHandler {
 
 impl LegacyHandler {
     #[cfg_attr(not(feature = "rustls"), allow(unused_variables))]
-    fn create_client(version: ApiVersion, host: &str) -> anyhow::Result<Client> {
+    fn create_client(
+        version: ApiVersion,
+        host: &str,
+        ignore_pinning: bool,
+    ) -> anyhow::Result<Client> {
         if version == ApiVersion::V1 {
             return Ok(Client::new());
         }
@@ -60,7 +64,9 @@ impl LegacyHandler {
             .https_only(true);
 
         #[cfg(feature = "rustls")]
-        if let Some(config) = crate::tls::pinned_client_config(host)? {
+        if ignore_pinning {
+            eprintln!("Warning: certificate pinning disabled, the BMC's identity is not verified");
+        } else if let Some(config) = crate::tls::pinned_client_config(host)? {
             return Ok(builder.tls_backend_preconfigured(config).build()?);
         }
 
@@ -82,7 +88,7 @@ impl LegacyHandler {
                 )
             })
             .unwrap_or("TPI".to_string());
-        let client = Self::create_client(version, &host)?;
+        let client = Self::create_client(version, &host, args.ignore_certificate_pinning)?;
         let request = Request::new(host, version, creds, &user_agent)?;
 
         Ok(Self {
