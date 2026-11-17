@@ -18,7 +18,7 @@ use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use reqwest::header::{HeaderValue, USER_AGENT};
 use reqwest::multipart::Form;
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
@@ -162,21 +162,19 @@ fn url_from_host(host: &str, scheme: &str) -> Result<Url> {
 }
 
 fn get_cached_token(host: &str) -> Option<String> {
-    let path = get_cache_file_location(host);
-    let file = std::fs::read_to_string(path);
-
-    file.ok()
+    std::fs::read_to_string(get_cache_file_location(host)?).ok()
 }
 
 fn delete_cached_token(host: &str) {
-    let _ = std::fs::remove_file(get_cache_file_location(host));
+    if let Some(path) = get_cache_file_location(host) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Tokens are cached per host so that a token issued by one BMC is never
 /// sent to another.
-fn get_cache_file_location(host: &str) -> PathBuf {
-    let default = PathBuf::from(".");
-    let mut path = dirs::cache_dir().unwrap_or(default);
+fn get_cache_file_location(host: &str) -> Option<PathBuf> {
+    let mut path = dirs::cache_dir()?;
 
     let host: String = host
         .chars()
@@ -190,7 +188,7 @@ fn get_cache_file_location(host: &str) -> PathBuf {
         .collect();
     path.push(format!("tpi_token_{host}"));
 
-    path
+    Some(path)
 }
 
 async fn request_token(
@@ -240,8 +238,7 @@ async fn request_token(
 
             if save_token {
                 if let Err(e) = cache_token(host, &token) {
-                    let path = get_cache_file_location(host);
-                    println!("Warning: failed to write to cache file {:?}: {}", path, e);
+                    println!("Warning: failed to cache token: {e:#}");
                 }
             }
 
@@ -267,7 +264,9 @@ fn get_param(results: &serde_json::Value, key: &str) -> String {
 }
 
 fn cache_token(host: &str, token: &str) -> Result<()> {
-    let path = get_cache_file_location(host);
+    let Some(path) = get_cache_file_location(host) else {
+        bail!("no cache directory available");
+    };
 
     // Remove the token file used by older versions, which was shared by all hosts.
     if let Some(mut legacy) = dirs::cache_dir() {
@@ -275,12 +274,16 @@ fn cache_token(host: &str, token: &str) -> Result<()> {
         let _ = std::fs::remove_file(legacy);
     }
 
-    std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)?
-        .write_all(token.as_bytes())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    // The token grants full BMC access: keep it private to the current user.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+
+    options
+        .open(&path)
+        .and_then(|mut f| f.write_all(token.as_bytes()))
+        .with_context(|| format!("{}", path.display()))?;
 
     Ok(())
 }
@@ -291,10 +294,10 @@ mod tests {
 
     #[test]
     fn cache_file_is_per_host() {
-        let a = get_cache_file_location("turingpi.local");
-        let b = get_cache_file_location("[::1]:8080");
+        let a = get_cache_file_location("turingpi.local").unwrap();
+        let b = get_cache_file_location("[::1]:8080").unwrap();
         assert!(a.ends_with("tpi_token_turingpi.local"));
         assert!(b.ends_with("tpi_token____1__8080"));
-        assert_ne!(a, get_cache_file_location("turingpi.local:8080"));
+        assert_ne!(Some(a), get_cache_file_location("turingpi.local:8080"));
     }
 }
