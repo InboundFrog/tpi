@@ -444,7 +444,7 @@ impl LegacyHandler {
         }
 
         let json: serde_json::Value = response.json().await?;
-        let handle = json["handle"].as_u64().unwrap_or_default();
+        let handle = get_json_num(&json, "handle")?;
 
         println!("started transfer of {}..", HumanBytes(file_size));
         let pb = build_progress_bar(file_size);
@@ -463,7 +463,10 @@ impl LegacyHandler {
 
         let form = reqwest::multipart::Form::new().part("file", stream_part);
         multipart_request.set_multipart(form);
-        multipart_request.send(self.client.clone()).await?;
+        let response = multipart_request.send(self.client.clone()).await?;
+        if !response.status().is_success() {
+            bail!("upload failed: {}", response.text().await?);
+        }
 
         self.watch_flash_progress(handle).await
     }
