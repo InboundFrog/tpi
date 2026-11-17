@@ -125,7 +125,7 @@ impl LegacyHandler {
         };
 
         if self.json {
-            println!("{}", &body.to_string());
+            println!("{}", body);
             return Ok(());
         }
 
