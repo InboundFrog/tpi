@@ -199,7 +199,7 @@ pub struct AdvancedArgs {
 #[derive(Args)]
 pub struct UartArgs {
     pub action: GetSet,
-    /// [possible values: 1-4], Not specifying a node selects all nodes.
+    /// [possible values: 1-4]
     #[arg(short, long)]
     #[arg(value_parser = clap::value_parser!(u8).range(1..5))]
     pub node: u8,
