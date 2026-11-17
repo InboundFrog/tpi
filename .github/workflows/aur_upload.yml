@@ -84,12 +84,10 @@ jobs:
           echo "PKG_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
       - run: cat ./PKGBUILD
       - name: Create AUR package
-        uses: addnab/docker-run-action@v3
-        with:
-          registry: ghcr.io
-          image: 'ghcr.io/heyhusen/archlinux-package-action:latest'
-          options: -v ${{ github.workspace }}:/workspace --entrypoint=""
-          run: /workspace/scripts/ci/entry_point.sh
+        run: >
+          docker run --rm -v "${{ github.workspace }}:/workspace" --entrypoint=""
+          ghcr.io/heyhusen/archlinux-package-action:3.0.1@sha256:037490348e7471c2d3160a007ff1260b78eb951d0d9e501aa4b1b4bda7cea2c9
+          /workspace/scripts/ci/entry_point.sh
       - name: Publish AUR package
         uses: KSXGitHub/github-actions-deploy-aur@v3
         with:
