@@ -244,7 +244,7 @@ async fn request_token(
 
             if save_token {
                 if let Err(e) = cache_token(host, &token) {
-                    println!("Warning: failed to cache token: {e:#}");
+                    eprintln!("Warning: failed to cache token: {e:#}");
                 }
             }
 

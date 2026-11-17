@@ -317,7 +317,7 @@ impl LegacyHandler {
         if !status.is_success() {
             if let Ok(json) = &json_res {
                 if let Some(err) = json.get("response") {
-                    println!("Error: {}", err);
+                    eprintln!("Error: {}", err);
                 }
             }
             bail!("Failed to begin flashing: {}", status);
@@ -362,7 +362,7 @@ impl LegacyHandler {
 
             if !status.is_success() {
                 if let Some(err) = json.get("response") {
-                    println!("Error: {}", err);
+                    eprintln!("Error: {}", err);
                 }
                 bail!("Failed to get flashing progress: {}", status);
             }
@@ -412,7 +412,7 @@ impl LegacyHandler {
         file: &mut File,
         file_name: String,
     ) -> anyhow::Result<()> {
-        println!("Warning: large files will very likely to fail to be uploaded in version 1");
+        eprintln!("Warning: large files will very likely to fail to be uploaded in version 1");
 
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).await?;
