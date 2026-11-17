@@ -581,6 +581,8 @@ impl LegacyHandler {
                     bail!("could not execute Normal mode: {}", response.text().await?);
                 }
 
+                // The reset is a separate request: drop the clear_usb_boot parameters.
+                self.request.url_mut().set_query(None);
                 return self.handle_power_nodes(&PowerArgs {
                     cmd: PowerCmd::Reset,
                     node: Some(args.node),
