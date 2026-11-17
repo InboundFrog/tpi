@@ -180,8 +180,11 @@ fn delete_cached_token(host: &str) {
 /// Tokens are cached per host so that a token issued by one BMC is never
 /// sent to another.
 fn get_cache_file_location(host: &str) -> Option<PathBuf> {
-    let mut path = dirs::cache_dir()?;
+    Some(dirs::cache_dir()?.join(host_file_name("tpi_token", host)))
+}
 
+/// File name for per-host state, safe for any filesystem.
+pub fn host_file_name(prefix: &str, host: &str) -> String {
     let host: String = host
         .chars()
         .map(|c| {
@@ -192,9 +195,7 @@ fn get_cache_file_location(host: &str) -> Option<PathBuf> {
             }
         })
         .collect();
-    path.push(format!("tpi_token_{host}"));
-
-    Some(path)
+    format!("{prefix}_{host}")
 }
 
 async fn request_token(
