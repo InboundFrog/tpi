@@ -30,7 +30,6 @@ use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::time::sleep;
-use tokio::{spawn, task::JoinHandle};
 use tokio_util::io::ReaderStream;
 
 type ResponsePrinter = fn(&serde_json::Value) -> anyhow::Result<()>;
@@ -329,18 +328,13 @@ impl LegacyHandler {
 
         println!("Flashing from image file {}...", args.image_path.display());
 
-        let progress_watcher = self.create_progress_watching_thread(handle_id);
-
-        progress_watcher.await.expect("failed to wait for thread");
-
-        Ok(())
+        self.watch_flash_progress(handle_id).await
     }
 
-    fn create_progress_watching_thread(&self, handle_id: u64) -> JoinHandle<()> {
+    async fn watch_flash_progress(&self, handle_id: u64) -> anyhow::Result<()> {
         let initial_delay = Duration::from_secs(3);
         let update_period = Duration::from_millis(500);
 
-        let client = self.client.clone();
         let mut req = self.request.clone();
 
         req.url_mut()
@@ -349,73 +343,69 @@ impl LegacyHandler {
             .append_pair("opt", "get")
             .append_pair("type", "flash");
 
-        spawn(async move {
-            let mut bar: Option<ProgressBar> = None;
-            let mut verifying = false;
+        let mut bar: Option<ProgressBar> = None;
+        let mut verifying = false;
 
-            sleep(initial_delay).await;
+        sleep(initial_delay).await;
 
-            loop {
-                let response = req
-                    .clone()
-                    .send(client.clone())
-                    .await
-                    .expect("Failed to send progress status request");
+        loop {
+            let response = req
+                .clone()
+                .send(self.client.clone())
+                .await
+                .context("failed to send progress status request")?;
 
-                let status = response.status();
-                let json = response
-                    .json::<serde_json::Value>()
-                    .await
-                    .expect("Failed to parse response as JSON");
+            let status = response.status();
+            let json = response
+                .json::<serde_json::Value>()
+                .await
+                .context("failed to parse response as JSON")?;
 
-                if !status.is_success() {
-                    if let Some(err) = json.get("response") {
-                        println!("Error: {}", err);
-                    }
-                    panic!("Failed to get flashing progress: {}", status);
+            if !status.is_success() {
+                if let Some(err) = json.get("response") {
+                    println!("Error: {}", err);
                 }
+                bail!("Failed to get flashing progress: {}", status);
+            }
 
-                if let Some(map) = json.get("Transferring") {
-                    let id = get_json_num(map, "id");
-                    assert_eq!(id, handle_id, "Invalid flashing handle");
+            if let Some(map) = json.get("Transferring") {
+                let id = get_json_num(map, "id");
+                ensure!(id == handle_id, "Invalid flashing handle");
 
-                    let file_size = get_json_num(map, "size");
+                let file_size = get_json_num(map, "size");
 
-                    if let Some(bar) = &mut bar {
-                        let bytes_written = get_json_num(map, "bytes_written");
+                if let Some(bar) = &mut bar {
+                    let bytes_written = get_json_num(map, "bytes_written");
 
-                        if bytes_written >= file_size {
-                            if !verifying {
-                                bar.finish_and_clear();
-                                *bar = build_spinner();
-                                bar.set_message("Verifying checksum...");
-                                verifying = true;
-                            }
-                        } else {
-                            bar.set_position(bytes_written);
+                    if bytes_written >= file_size {
+                        if !verifying {
+                            bar.finish_and_clear();
+                            *bar = build_spinner();
+                            bar.set_message("Verifying checksum...");
+                            verifying = true;
                         }
                     } else {
-                        bar = Some(build_progress_bar(file_size));
+                        bar.set_position(bytes_written);
                     }
-
-                    sleep(update_period).await;
-                    continue;
+                } else {
+                    bar = Some(build_progress_bar(file_size));
                 }
 
-                if json.get("Done").is_some() {
-                    println!("Done");
-                    break;
-                }
-
-                if let Some(map) = json.get("Error") {
-                    eprintln!("Error occured during flashing: {}", map);
-                    return;
-                }
-
-                eprintln!("Unexpected response: {:#?}", json);
-                return;
+                sleep(update_period).await;
+                continue;
             }
-        })
+
+            if json.get("Done").is_some() {
+                println!("Done");
+                return Ok(());
+            }
+
+            if let Some(map) = json.get("Error") {
+                bail!("Error occured during flashing: {}", map);
+            }
+
+            bail!("Unexpected response: {:#?}", json);
+        }
     }
 
     async fn handle_file_upload_v1(
@@ -476,10 +466,7 @@ impl LegacyHandler {
         multipart_request.set_multipart(form);
         multipart_request.send(self.client.clone()).await?;
 
-        let progress_watcher = self.create_progress_watching_thread(handle);
-        progress_watcher.await.expect("failed to wait for thread");
-
-        Ok(())
+        self.watch_flash_progress(handle).await
     }
 
     fn handle_usb(&mut self, args: &UsbArgs) -> anyhow::Result<()> {
