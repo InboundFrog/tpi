@@ -14,7 +14,7 @@
 
 use std::io::{stdout, Write};
 
-use anyhow::{bail, Result};
+use anyhow::{ensure, Context, Result};
 use crossterm::cursor::MoveToColumn;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::style::Print;
@@ -46,17 +46,14 @@ impl Prompt {
 
         disable_raw_mode()?;
 
-        match res {
-            Ok(()) => Ok(self.input.clone()),
-            Err(e) => bail!("failed to get terminal event: {e}"),
-        }
+        res.map(|()| self.input.clone())
     }
 
     fn read_loop(&mut self) -> Result<()> {
         loop {
             self.print()?;
 
-            let cont = match event::read()? {
+            let cont = match event::read().context("failed to get terminal event")? {
                 Event::Key(key) => self.handle_key(key)?,
                 _ => true,
             };
@@ -94,6 +91,7 @@ impl Prompt {
 
         if interrupt || key.code == KeyCode::Enter {
             execute!(stdout(), Print("\n\r"))?;
+            ensure!(!interrupt, "interrupted");
             return Ok(false);
         }
 
