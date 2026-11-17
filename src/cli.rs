@@ -45,7 +45,9 @@ pub struct Cli {
     #[arg(long, global = true, env = "TPI_USERNAME")]
     pub user: Option<String>,
 
-    /// Same as `--username`
+    /// Specify the password to log in with. Prefer the `TPI_PASSWORD` environment variable or the
+    /// interactive prompt: a password given on the command line is visible to other local users in
+    /// the process list and is saved in shell history.
     #[arg(
         long,
         name = "PASS",
