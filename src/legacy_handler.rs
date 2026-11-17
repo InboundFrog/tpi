@@ -48,18 +48,24 @@ pub struct LegacyHandler {
 }
 
 impl LegacyHandler {
-    fn create_client(version: ApiVersion) -> anyhow::Result<Client> {
+    #[cfg_attr(not(feature = "rustls"), allow(unused_variables))]
+    fn create_client(version: ApiVersion, host: &str) -> anyhow::Result<Client> {
         if version == ApiVersion::V1 {
             return Ok(Client::new());
         }
 
-        let client = ClientBuilder::new()
+        let builder = ClientBuilder::new()
             .gzip(true)
-            .danger_accept_invalid_certs(true)
             .http1_only()
-            .https_only(true)
-            .build()?;
-        Ok(client)
+            .https_only(true);
+
+        #[cfg(feature = "rustls")]
+        if let Some(config) = crate::tls::pinned_client_config(host)? {
+            return Ok(builder.tls_backend_preconfigured(config).build()?);
+        }
+
+        // The BMC certificate is self-signed. Without a place to pin it, accept any.
+        Ok(builder.danger_accept_invalid_certs(true).build()?)
     }
 
     pub fn new(host: String, args: &Cli) -> anyhow::Result<Self> {
@@ -76,8 +82,8 @@ impl LegacyHandler {
                 )
             })
             .unwrap_or("TPI".to_string());
+        let client = Self::create_client(version, &host)?;
         let request = Request::new(host, version, creds, &user_agent)?;
-        let client = Self::create_client(version)?;
 
         Ok(Self {
             request,

@@ -16,6 +16,8 @@ mod cli;
 mod legacy_handler;
 mod prompt;
 mod request;
+#[cfg(feature = "rustls")]
+mod tls;
 
 use crate::legacy_handler::LegacyHandler;
 use clap::{CommandFactory, Parser};
