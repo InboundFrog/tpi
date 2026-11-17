@@ -25,6 +25,11 @@ use std::{io, process::ExitCode};
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    #[cfg(feature = "rustls")]
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("no other crypto provider is installed");
+
     let cli = Cli::parse();
     if let Some(shell) = cli.gencompletion {
         generate(
