@@ -1,3 +1,4 @@
+#!/bin/bash
 # Copyright 2023 Turing Machines
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,19 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#!/bin/bash
 toml_file=${1}
 arch=${2}
 output_dir=${3:-$(pwd)}
 
 if [ -z "$2" ]; then
     echo "missing architecture argument" >&2
-    exit -1
+    exit 1
 fi
 
 if [ ! -f "${toml_file}" ]; then
     echo "provided toml file: ${toml_file}, does not exist" >&2
-    exit -1
+    exit 1
 fi
 
 PACKAGE_NAME=$(grep '^name =' ${toml_file} | sed 's/name = "\(.*\)"/\1/')
