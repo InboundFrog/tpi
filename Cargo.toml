@@ -25,7 +25,7 @@ serde_json = "1.0.139"
 tokio = { version = "1.43.0", features = ["rt", "rt-multi-thread", "macros", "fs"] }
 tokio-util = "0.7.13"
 url = "2.5.4"
-board-info = { git = "https://github.com/turing-machines/bmcd", features = ["clap_derive"], optional = true }
+board-info = { git = "https://github.com/turing-machines/bmcd", rev = "a15e8fc2341bf762a8f653a2d9e6b5491f22df7d", features = ["clap_derive"], optional = true }
 
 
 
