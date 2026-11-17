@@ -234,7 +234,7 @@ async fn request_token(
     match resp.status() {
         StatusCode::OK => {
             let json = resp.json::<serde_json::Value>().await?;
-            let token = get_param(&json, "id");
+            let token = get_param(&json, "id")?;
 
             if save_token {
                 if let Err(e) = cache_token(host, &token) {
@@ -254,13 +254,13 @@ async fn request_token(
     }
 }
 
-fn get_param(results: &serde_json::Value, key: &str) -> String {
-    results
+fn get_param(results: &serde_json::Value, key: &str) -> Result<String> {
+    Ok(results
         .get(key)
-        .unwrap_or_else(|| panic!("API error: Expected `{key}` attribute"))
+        .with_context(|| format!("API error: Expected `{key}` attribute"))?
         .as_str()
-        .unwrap_or_else(|| panic!("API error: `{key}` value is not a string"))
-        .to_owned()
+        .with_context(|| format!("API error: `{key}` value is not a string"))?
+        .to_owned())
 }
 
 fn cache_token(host: &str, token: &str) -> Result<()> {

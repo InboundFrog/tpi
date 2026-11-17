@@ -129,27 +129,26 @@ impl LegacyHandler {
             return Ok(());
         }
 
-        body.get("response")
-            .ok_or_else(|| anyhow::anyhow!("expected 'response' key in JSON payload"))
-            .map(|response| {
-                let extracted = response
-                    .as_array()
-                    .unwrap_or_else(|| panic!("API error: `response` is not an array"))
-                    .first()
-                    .unwrap_or_else(|| panic!("API error: `response` is empty"));
-                let default_print = || {
-                    // In this case there is no printer set, fallback on
-                    // printing the http response body as text.
-                    println!("{}", extracted);
-                };
+        let extracted = body
+            .get("response")
+            .context("expected 'response' key in JSON payload")?
+            .as_array()
+            .context("API error: `response` is not an array")?
+            .first()
+            .context("API error: `response` is empty")?;
+        let default_print = || {
+            // In this case there is no printer set, fallback on
+            // printing the http response body as text.
+            println!("{}", extracted);
+        };
 
-                self.response_printer.map_or_else(default_print, |f| {
-                    if let Err(e) = f(extracted) {
-                        default_print();
-                        println!("{}", e);
-                    }
-                });
-            })
+        self.response_printer.map_or_else(default_print, |f| {
+            if let Err(e) = f(extracted) {
+                default_print();
+                println!("{}", e);
+            }
+        });
+        Ok(())
     }
 
     fn handle_info(&mut self) {
@@ -324,7 +323,7 @@ impl LegacyHandler {
             bail!("Failed to begin flashing: {}", status);
         }
 
-        let handle_id = get_json_num(&json_res?, "handle");
+        let handle_id = get_json_num(&json_res?, "handle")?;
 
         println!("Flashing from image file {}...", args.image_path.display());
 
@@ -369,13 +368,13 @@ impl LegacyHandler {
             }
 
             if let Some(map) = json.get("Transferring") {
-                let id = get_json_num(map, "id");
+                let id = get_json_num(map, "id")?;
                 ensure!(id == handle_id, "Invalid flashing handle");
 
-                let file_size = get_json_num(map, "size");
+                let file_size = get_json_num(map, "size")?;
 
                 if let Some(bar) = &mut bar {
-                    let bytes_written = get_json_num(map, "bytes_written");
+                    let bytes_written = get_json_num(map, "bytes_written")?;
 
                     if bytes_written >= file_size {
                         if !verifying {
@@ -649,7 +648,9 @@ fn print_power_status_nodes(map: &serde_json::Value) -> anyhow::Result<()> {
         .get("result")
         .context("API error")?
         .as_array()
-        .context("API error")?[0]
+        .context("API error")?
+        .first()
+        .context("API error: empty result")?
         .as_object()
         .context("response parse error")?;
 
@@ -663,7 +664,7 @@ fn print_power_status_nodes(map: &serde_json::Value) -> anyhow::Result<()> {
 }
 
 fn result_printer(result: &serde_json::Value) -> anyhow::Result<()> {
-    let res = get_json_str(result, "result");
+    let res = get_json_str(result, "result")?;
     println!("{}", res);
     Ok(())
 }
@@ -673,28 +674,32 @@ fn info_printer(map: &serde_json::Value) -> anyhow::Result<()> {
         .get("result")
         .context("API error")?
         .as_array()
-        .context("API error")?[0]
+        .context("API error")?
+        .first()
+        .context("API error: empty result")?
         .as_object()
         .context("response parse error")?;
 
     println!("|{:-^15}|{:-^28}|", "key", "value");
     for (key, value) in results {
-        println!(" {:<15}: {}", key, value.as_str().expect("API error"));
+        println!(" {:<15}: {}", key, value.as_str().context("API error")?);
     }
     println!("|{:-^15}|{:-^28}|", "", "");
     Ok(())
 }
 
 fn print_usb_status(map: &serde_json::Value) -> anyhow::Result<()> {
-    let results = &map
+    let results = map
         .get("result")
         .context("API error")?
         .as_array()
-        .context("API error")?[0];
+        .context("API error")?
+        .first()
+        .context("API error: empty result")?;
 
-    let node = get_json_str(results, "node").to_lowercase();
-    let mode = get_json_str(results, "mode").to_lowercase();
-    let route = get_json_str(results, "route").to_lowercase();
+    let node = get_json_str(results, "node")?.to_lowercase();
+    let mode = get_json_str(results, "mode")?.to_lowercase();
+    let route = get_json_str(results, "route")?.to_lowercase();
 
     println!("{:^12}-->{:^12}", "USB Host", "USB Device");
 
@@ -710,7 +715,7 @@ fn print_usb_status(map: &serde_json::Value) -> anyhow::Result<()> {
 }
 
 fn uart_printer(map: &serde_json::Value) -> anyhow::Result<()> {
-    let data = get_json_str(map, "uart");
+    let data = get_json_str(map, "uart")?;
 
     print!("{data}");
 
@@ -719,7 +724,7 @@ fn uart_printer(map: &serde_json::Value) -> anyhow::Result<()> {
 
 fn cooling_printer(map: &serde_json::Value) -> anyhow::Result<()> {
     if map.get("result").and_then(|r| r.as_str()).is_some() {
-        println!("{}", get_json_str(map, "result"));
+        println!("{}", get_json_str(map, "result")?);
         return Ok(());
     }
 
@@ -734,9 +739,9 @@ fn cooling_printer(map: &serde_json::Value) -> anyhow::Result<()> {
     } else {
         println!("|{:-^15}|{:-^7}|{:-^11}|", "Device", "Speed", "Max Speed");
         for device in results {
-            let name = get_json_str(device, "device");
-            let speed = get_json_num(device, "speed");
-            let max_speed = get_json_num(device, "max_speed");
+            let name = get_json_str(device, "device")?;
+            let speed = get_json_num(device, "speed")?;
+            let max_speed = get_json_num(device, "max_speed")?;
             println!("|{:<15}|{:>7}|{:>11}|", name, speed, max_speed);
         }
     }
@@ -766,16 +771,32 @@ fn build_spinner() -> ProgressBar {
     pb
 }
 
-fn get_json_str<'m>(map: &'m serde_json::Value, key: &str) -> &'m str {
+fn get_json_str<'m>(map: &'m serde_json::Value, key: &str) -> anyhow::Result<&'m str> {
     map.get(key)
-        .unwrap_or_else(|| panic!("API error: expected `{}` key", key))
+        .with_context(|| format!("API error: expected `{}` key", key))?
         .as_str()
-        .unwrap_or_else(|| panic!("API error: `{}` is not a string", key))
+        .with_context(|| format!("API error: `{}` is not a string", key))
 }
 
-fn get_json_num(map: &serde_json::Value, key: &str) -> u64 {
+fn get_json_num(map: &serde_json::Value, key: &str) -> anyhow::Result<u64> {
     map.get(key)
-        .unwrap_or_else(|| panic!("API error: expected `{}` key", key))
+        .with_context(|| format!("API error: expected `{}` key", key))?
         .as_u64()
-        .unwrap_or_else(|| panic!("API error: `{}` is not a number", key))
+        .with_context(|| format!("API error: `{}` is not a number", key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn malformed_responses_are_errors() {
+        assert!(result_printer(&json!({})).is_err());
+        assert!(info_printer(&json!({ "result": [] })).is_err());
+        assert!(info_printer(&json!({ "result": [{ "ip": 1 }] })).is_err());
+        assert!(print_power_status_nodes(&json!({ "result": [] })).is_err());
+        assert!(print_usb_status(&json!({ "result": [{}] })).is_err());
+        assert!(cooling_printer(&json!({ "result": [{ "device": "fan" }] })).is_err());
+    }
 }
