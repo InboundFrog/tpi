@@ -16,6 +16,8 @@ mod cli;
 mod legacy_handler;
 mod prompt;
 mod request;
+#[cfg(feature = "rustls")]
+mod tls;
 
 use crate::legacy_handler::LegacyHandler;
 use clap::{CommandFactory, Parser};
@@ -25,6 +27,11 @@ use std::{io, process::ExitCode};
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    #[cfg(feature = "rustls")]
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("no other crypto provider is installed");
+
     let cli = Cli::parse();
     if let Some(shell) = cli.gencompletion {
         generate(
@@ -37,11 +44,7 @@ async fn main() -> ExitCode {
     }
 
     if let Err(e) = execute_cli_command(&cli).await {
-        if let Some(error) = e.downcast_ref::<reqwest::Error>() {
-            println!("{error}");
-        } else {
-            println!("{:#}", e);
-        }
+        eprintln!("{:#}", e);
         return ExitCode::FAILURE;
     }
 

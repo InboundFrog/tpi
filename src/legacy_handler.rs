@@ -30,7 +30,6 @@ use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::time::sleep;
-use tokio::{spawn, task::JoinHandle};
 use tokio_util::io::ReaderStream;
 
 type ResponsePrinter = fn(&serde_json::Value) -> anyhow::Result<()>;
@@ -49,18 +48,30 @@ pub struct LegacyHandler {
 }
 
 impl LegacyHandler {
-    fn create_client(version: ApiVersion) -> anyhow::Result<Client> {
+    #[cfg_attr(not(feature = "rustls"), allow(unused_variables))]
+    fn create_client(
+        version: ApiVersion,
+        host: &str,
+        ignore_pinning: bool,
+    ) -> anyhow::Result<Client> {
         if version == ApiVersion::V1 {
             return Ok(Client::new());
         }
 
-        let client = ClientBuilder::new()
+        let builder = ClientBuilder::new()
             .gzip(true)
-            .danger_accept_invalid_certs(true)
             .http1_only()
-            .https_only(true)
-            .build()?;
-        Ok(client)
+            .https_only(true);
+
+        #[cfg(feature = "rustls")]
+        if ignore_pinning {
+            eprintln!("Warning: certificate pinning disabled, the BMC's identity is not verified");
+        } else if let Some(config) = crate::tls::pinned_client_config(host)? {
+            return Ok(builder.tls_backend_preconfigured(config).build()?);
+        }
+
+        // The BMC certificate is self-signed. Without a place to pin it, accept any.
+        Ok(builder.danger_accept_invalid_certs(true).build()?)
     }
 
     pub fn new(host: String, args: &Cli) -> anyhow::Result<Self> {
@@ -77,8 +88,8 @@ impl LegacyHandler {
                 )
             })
             .unwrap_or("TPI".to_string());
+        let client = Self::create_client(version, &host, args.ignore_certificate_pinning)?;
         let request = Request::new(host, version, creds, &user_agent)?;
-        let client = Self::create_client(version)?;
 
         Ok(Self {
             request,
@@ -126,31 +137,30 @@ impl LegacyHandler {
         };
 
         if self.json {
-            println!("{}", &body.to_string());
+            println!("{}", body);
             return Ok(());
         }
 
-        body.get("response")
-            .ok_or_else(|| anyhow::anyhow!("expected 'response' key in JSON payload"))
-            .map(|response| {
-                let extracted = response
-                    .as_array()
-                    .unwrap_or_else(|| panic!("API error: `response` is not an array"))
-                    .first()
-                    .unwrap_or_else(|| panic!("API error: `response` is empty"));
-                let default_print = || {
-                    // In this case there is no printer set, fallback on
-                    // printing the http response body as text.
-                    println!("{}", extracted);
-                };
+        let extracted = body
+            .get("response")
+            .context("expected 'response' key in JSON payload")?
+            .as_array()
+            .context("API error: `response` is not an array")?
+            .first()
+            .context("API error: `response` is empty")?;
+        let default_print = || {
+            // In this case there is no printer set, fallback on
+            // printing the http response body as text.
+            println!("{}", extracted);
+        };
 
-                self.response_printer.map_or_else(default_print, |f| {
-                    if let Err(e) = f(extracted) {
-                        default_print();
-                        println!("{}", e);
-                    }
-                });
-            })
+        self.response_printer.map_or_else(default_print, |f| {
+            if let Err(e) = f(extracted) {
+                default_print();
+                println!("{}", e);
+            }
+        });
+        Ok(())
     }
 
     fn handle_info(&mut self) {
@@ -319,28 +329,23 @@ impl LegacyHandler {
         if !status.is_success() {
             if let Ok(json) = &json_res {
                 if let Some(err) = json.get("response") {
-                    println!("Error: {}", err);
+                    eprintln!("Error: {}", err);
                 }
             }
             bail!("Failed to begin flashing: {}", status);
         }
 
-        let handle_id = get_json_num(&json_res?, "handle");
+        let handle_id = get_json_num(&json_res?, "handle")?;
 
         println!("Flashing from image file {}...", args.image_path.display());
 
-        let progress_watcher = self.create_progress_watching_thread(handle_id);
-
-        progress_watcher.await.expect("failed to wait for thread");
-
-        Ok(())
+        self.watch_flash_progress(handle_id).await
     }
 
-    fn create_progress_watching_thread(&self, handle_id: u64) -> JoinHandle<()> {
+    async fn watch_flash_progress(&self, handle_id: u64) -> anyhow::Result<()> {
         let initial_delay = Duration::from_secs(3);
         let update_period = Duration::from_millis(500);
 
-        let client = self.client.clone();
         let mut req = self.request.clone();
 
         req.url_mut()
@@ -349,73 +354,69 @@ impl LegacyHandler {
             .append_pair("opt", "get")
             .append_pair("type", "flash");
 
-        spawn(async move {
-            let mut bar: Option<ProgressBar> = None;
-            let mut verifying = false;
+        let mut bar: Option<ProgressBar> = None;
+        let mut verifying = false;
 
-            sleep(initial_delay).await;
+        sleep(initial_delay).await;
 
-            loop {
-                let response = req
-                    .clone()
-                    .send(client.clone())
-                    .await
-                    .expect("Failed to send progress status request");
+        loop {
+            let response = req
+                .clone()
+                .send(self.client.clone())
+                .await
+                .context("failed to send progress status request")?;
 
-                let status = response.status();
-                let json = response
-                    .json::<serde_json::Value>()
-                    .await
-                    .expect("Failed to parse response as JSON");
+            let status = response.status();
+            let json = response
+                .json::<serde_json::Value>()
+                .await
+                .context("failed to parse response as JSON")?;
 
-                if !status.is_success() {
-                    if let Some(err) = json.get("response") {
-                        println!("Error: {}", err);
-                    }
-                    panic!("Failed to get flashing progress: {}", status);
+            if !status.is_success() {
+                if let Some(err) = json.get("response") {
+                    eprintln!("Error: {}", err);
                 }
+                bail!("Failed to get flashing progress: {}", status);
+            }
 
-                if let Some(map) = json.get("Transferring") {
-                    let id = get_json_num(map, "id");
-                    assert_eq!(id, handle_id, "Invalid flashing handle");
+            if let Some(map) = json.get("Transferring") {
+                let id = get_json_num(map, "id")?;
+                ensure!(id == handle_id, "Invalid flashing handle");
 
-                    let file_size = get_json_num(map, "size");
+                let file_size = get_json_num(map, "size")?;
 
-                    if let Some(bar) = &mut bar {
-                        let bytes_written = get_json_num(map, "bytes_written");
+                if let Some(bar) = &mut bar {
+                    let bytes_written = get_json_num(map, "bytes_written")?;
 
-                        if bytes_written >= file_size {
-                            if !verifying {
-                                bar.finish_and_clear();
-                                *bar = build_spinner();
-                                bar.set_message("Verifying checksum...");
-                                verifying = true;
-                            }
-                        } else {
-                            bar.set_position(bytes_written);
+                    if bytes_written >= file_size {
+                        if !verifying {
+                            bar.finish_and_clear();
+                            *bar = build_spinner();
+                            bar.set_message("Verifying checksum...");
+                            verifying = true;
                         }
                     } else {
-                        bar = Some(build_progress_bar(file_size));
+                        bar.set_position(bytes_written);
                     }
-
-                    sleep(update_period).await;
-                    continue;
+                } else {
+                    bar = Some(build_progress_bar(file_size));
                 }
 
-                if json.get("Done").is_some() {
-                    println!("Done");
-                    break;
-                }
-
-                if let Some(map) = json.get("Error") {
-                    eprintln!("Error occured during flashing: {}", map);
-                    return;
-                }
-
-                eprintln!("Unexpected response: {:#?}", json);
-                return;
+                sleep(update_period).await;
+                continue;
             }
-        })
+
+            if json.get("Done").is_some() {
+                println!("Done");
+                return Ok(());
+            }
+
+            if let Some(map) = json.get("Error") {
+                bail!("Error occured during flashing: {}", map);
+            }
+
+            bail!("Unexpected response: {:#?}", json);
+        }
     }
 
     async fn handle_file_upload_v1(
@@ -423,7 +424,7 @@ impl LegacyHandler {
         file: &mut File,
         file_name: String,
     ) -> anyhow::Result<()> {
-        println!("Warning: large files will very likely to fail to be uploaded in version 1");
+        eprintln!("Warning: large files will very likely to fail to be uploaded in version 1");
 
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).await?;
@@ -431,11 +432,15 @@ impl LegacyHandler {
             .mime_str("application/octet-stream")?
             .file_name(file_name);
         let form = reqwest::multipart::Form::new().part("file", part);
-        self.client
-            .post(self.request.url().clone())
-            .multipart(form)
-            .send()
-            .await?;
+
+        let mut request = self.request.to_post()?;
+        *request.url_mut() = self.request.url().clone();
+        request.set_multipart(form);
+
+        let response = request.send(self.client.clone()).await?;
+        if !response.status().is_success() {
+            bail!("upload failed: {}", response.text().await?);
+        }
         Ok(())
     }
 
@@ -451,7 +456,7 @@ impl LegacyHandler {
         }
 
         let json: serde_json::Value = response.json().await?;
-        let handle = json["handle"].as_u64().unwrap_or_default();
+        let handle = get_json_num(&json, "handle")?;
 
         println!("started transfer of {}..", HumanBytes(file_size));
         let pb = build_progress_bar(file_size);
@@ -470,12 +475,12 @@ impl LegacyHandler {
 
         let form = reqwest::multipart::Form::new().part("file", stream_part);
         multipart_request.set_multipart(form);
-        multipart_request.send(self.client.clone()).await?;
+        let response = multipart_request.send(self.client.clone()).await?;
+        if !response.status().is_success() {
+            bail!("upload failed: {}", response.text().await?);
+        }
 
-        let progress_watcher = self.create_progress_watching_thread(handle);
-        progress_watcher.await.expect("failed to wait for thread");
-
-        Ok(())
+        self.watch_flash_progress(handle).await
     }
 
     fn handle_usb(&mut self, args: &UsbArgs) -> anyhow::Result<()> {
@@ -591,6 +596,8 @@ impl LegacyHandler {
                     bail!("could not execute Normal mode: {}", response.text().await?);
                 }
 
+                // The reset is a separate request: drop the clear_usb_boot parameters.
+                self.request.url_mut().set_query(None);
                 return self.handle_power_nodes(&PowerArgs {
                     cmd: PowerCmd::Reset,
                     node: Some(args.node),
@@ -658,7 +665,9 @@ fn print_power_status_nodes(map: &serde_json::Value) -> anyhow::Result<()> {
         .get("result")
         .context("API error")?
         .as_array()
-        .context("API error")?[0]
+        .context("API error")?
+        .first()
+        .context("API error: empty result")?
         .as_object()
         .context("response parse error")?;
 
@@ -672,7 +681,7 @@ fn print_power_status_nodes(map: &serde_json::Value) -> anyhow::Result<()> {
 }
 
 fn result_printer(result: &serde_json::Value) -> anyhow::Result<()> {
-    let res = get_json_str(result, "result");
+    let res = get_json_str(result, "result")?;
     println!("{}", res);
     Ok(())
 }
@@ -682,28 +691,32 @@ fn info_printer(map: &serde_json::Value) -> anyhow::Result<()> {
         .get("result")
         .context("API error")?
         .as_array()
-        .context("API error")?[0]
+        .context("API error")?
+        .first()
+        .context("API error: empty result")?
         .as_object()
         .context("response parse error")?;
 
     println!("|{:-^15}|{:-^28}|", "key", "value");
     for (key, value) in results {
-        println!(" {:<15}: {}", key, value.as_str().expect("API error"));
+        println!(" {:<15}: {}", key, value.as_str().context("API error")?);
     }
     println!("|{:-^15}|{:-^28}|", "", "");
     Ok(())
 }
 
 fn print_usb_status(map: &serde_json::Value) -> anyhow::Result<()> {
-    let results = &map
+    let results = map
         .get("result")
         .context("API error")?
         .as_array()
-        .context("API error")?[0];
+        .context("API error")?
+        .first()
+        .context("API error: empty result")?;
 
-    let node = get_json_str(results, "node").to_lowercase();
-    let mode = get_json_str(results, "mode").to_lowercase();
-    let route = get_json_str(results, "route").to_lowercase();
+    let node = get_json_str(results, "node")?.to_lowercase();
+    let mode = get_json_str(results, "mode")?.to_lowercase();
+    let route = get_json_str(results, "route")?.to_lowercase();
 
     println!("{:^12}-->{:^12}", "USB Host", "USB Device");
 
@@ -719,7 +732,7 @@ fn print_usb_status(map: &serde_json::Value) -> anyhow::Result<()> {
 }
 
 fn uart_printer(map: &serde_json::Value) -> anyhow::Result<()> {
-    let data = get_json_str(map, "uart");
+    let data = get_json_str(map, "uart")?;
 
     print!("{data}");
 
@@ -728,7 +741,7 @@ fn uart_printer(map: &serde_json::Value) -> anyhow::Result<()> {
 
 fn cooling_printer(map: &serde_json::Value) -> anyhow::Result<()> {
     if map.get("result").and_then(|r| r.as_str()).is_some() {
-        println!("{}", get_json_str(map, "result"));
+        println!("{}", get_json_str(map, "result")?);
         return Ok(());
     }
 
@@ -743,9 +756,9 @@ fn cooling_printer(map: &serde_json::Value) -> anyhow::Result<()> {
     } else {
         println!("|{:-^15}|{:-^7}|{:-^11}|", "Device", "Speed", "Max Speed");
         for device in results {
-            let name = get_json_str(device, "device");
-            let speed = get_json_num(device, "speed");
-            let max_speed = get_json_num(device, "max_speed");
+            let name = get_json_str(device, "device")?;
+            let speed = get_json_num(device, "speed")?;
+            let max_speed = get_json_num(device, "max_speed")?;
             println!("|{:<15}|{:>7}|{:>11}|", name, speed, max_speed);
         }
     }
@@ -775,16 +788,32 @@ fn build_spinner() -> ProgressBar {
     pb
 }
 
-fn get_json_str<'m>(map: &'m serde_json::Value, key: &str) -> &'m str {
+fn get_json_str<'m>(map: &'m serde_json::Value, key: &str) -> anyhow::Result<&'m str> {
     map.get(key)
-        .unwrap_or_else(|| panic!("API error: expected `{}` key", key))
+        .with_context(|| format!("API error: expected `{}` key", key))?
         .as_str()
-        .unwrap_or_else(|| panic!("API error: `{}` is not a string", key))
+        .with_context(|| format!("API error: `{}` is not a string", key))
 }
 
-fn get_json_num(map: &serde_json::Value, key: &str) -> u64 {
+fn get_json_num(map: &serde_json::Value, key: &str) -> anyhow::Result<u64> {
     map.get(key)
-        .unwrap_or_else(|| panic!("API error: expected `{}` key", key))
+        .with_context(|| format!("API error: expected `{}` key", key))?
         .as_u64()
-        .unwrap_or_else(|| panic!("API error: `{}` is not a number", key))
+        .with_context(|| format!("API error: `{}` is not a number", key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn malformed_responses_are_errors() {
+        assert!(result_printer(&json!({})).is_err());
+        assert!(info_printer(&json!({ "result": [] })).is_err());
+        assert!(info_printer(&json!({ "result": [{ "ip": 1 }] })).is_err());
+        assert!(print_power_status_nodes(&json!({ "result": [] })).is_err());
+        assert!(print_usb_status(&json!({ "result": [{}] })).is_err());
+        assert!(cooling_printer(&json!({ "result": [{ "device": "fan" }] })).is_err());
+    }
 }

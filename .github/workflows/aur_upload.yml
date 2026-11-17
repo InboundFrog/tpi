@@ -2,13 +2,15 @@ name: Upload AUR
 on:
   release:
     types: [created]
+permissions:
+  contents: read
 
 jobs:
   tpi-bin:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: generate PKGBUILD
         run: |
           cp scripts/ci/PKGBUILD.bin ./PKGBUILD
@@ -23,12 +25,12 @@ jobs:
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "PKG_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
       - name: Validate package
-        uses: heyhusen/archlinux-package-action@v2
+        uses: heyhusen/archlinux-package-action@3f7aaada28c782497bfe02d6d6ea365b25fdea12 # v3.0.1
         with:
           updpkgsums: true
           srcinfo: true
       - name: Publish AUR package
-        uses: KSXGitHub/github-actions-deploy-aur@v3
+        uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
         with:
           pkgname: ${{ env.PKG_NAME }}
           pkgbuild: ./PKGBUILD
@@ -46,7 +48,7 @@ jobs:
           - git
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: generate PKGBUILD
         run: |
           cp scripts/ci/PKGBUILD ./PKGBUILD
@@ -84,14 +86,12 @@ jobs:
           echo "PKG_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
       - run: cat ./PKGBUILD
       - name: Create AUR package
-        uses: addnab/docker-run-action@v3
-        with:
-          registry: ghcr.io
-          image: 'ghcr.io/heyhusen/archlinux-package-action:latest'
-          options: -v ${{ github.workspace }}:/workspace --entrypoint=""
-          run: /workspace/scripts/ci/entry_point.sh
+        run: >
+          docker run --rm -v "${{ github.workspace }}:/workspace" --entrypoint=""
+          ghcr.io/heyhusen/archlinux-package-action:3.0.1@sha256:037490348e7471c2d3160a007ff1260b78eb951d0d9e501aa4b1b4bda7cea2c9
+          /workspace/scripts/ci/entry_point.sh
       - name: Publish AUR package
-        uses: KSXGitHub/github-actions-deploy-aur@v3
+        uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
         with:
           pkgname: ${{ env.PKG_NAME }}
           pkgbuild: ./PKGBUILD

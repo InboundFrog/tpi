@@ -18,7 +18,7 @@ use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use reqwest::header::{HeaderValue, USER_AGENT};
 use reqwest::multipart::Form;
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
@@ -59,7 +59,8 @@ impl Request {
 
     pub fn to_post(&self) -> Result<Self> {
         let url = url_from_host(&self.host, self.ver.scheme())?;
-        let inner = reqwest::Request::new(Method::POST, url);
+        let mut inner = reqwest::Request::new(Method::POST, url);
+        *inner.headers_mut() = self.inner.headers().clone();
 
         Ok(Self {
             host: self.host.clone(),
@@ -77,7 +78,8 @@ impl Request {
     pub async fn send(mut self, client: Client) -> Result<Response> {
         let mut authenticated = cfg!(not(feature = "localhost"));
 
-        let resp = loop {
+        // Attempts: [unauthenticated (localhost only),] cached token, fresh credentials.
+        for _ in 0..3 {
             let mut builder =
                 RequestBuilder::from_parts(client.clone(), self.inner.try_clone().unwrap());
 
@@ -86,20 +88,25 @@ impl Request {
                 builder = builder.bearer_auth(token);
             }
 
+            // A multipart body is a stream and can only be sent once.
+            let has_body = self.multipart.is_some();
             if let Some(form) = self.multipart.take() {
                 builder = builder.multipart(form);
             }
 
             let resp = builder.send().await?;
-            if resp.status() == StatusCode::UNAUTHORIZED {
-                delete_cached_token();
-                authenticated = true;
-            } else {
-                break resp;
+            if resp.status() != StatusCode::UNAUTHORIZED {
+                return Ok(resp);
             }
-        };
 
-        Ok(resp)
+            delete_cached_token(&self.host);
+            if has_body {
+                bail!("unauthorized: session expired, run the command again to log in");
+            }
+            authenticated = true;
+        }
+
+        bail!("unauthorized")
     }
 
     async fn get_bearer_token(&mut self, client: &Client) -> Result<String> {
@@ -109,7 +116,7 @@ impl Request {
         }
 
         // Else, try retrieving cached token from a file
-        if let Some(token) = get_cached_token() {
+        if let Some(token) = get_cached_token(&self.host) {
             return Ok(token);
         }
 
@@ -161,24 +168,35 @@ fn url_from_host(host: &str, scheme: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn get_cached_token() -> Option<String> {
-    let path = get_cache_file_location();
-    let file = std::fs::read_to_string(path);
-
-    file.ok()
+fn get_cached_token(host: &str) -> Option<String> {
+    std::fs::read_to_string(get_cache_file_location(host)?).ok()
 }
 
-fn delete_cached_token() {
-    let _ = std::fs::remove_file(get_cache_file_location());
+fn delete_cached_token(host: &str) {
+    if let Some(path) = get_cache_file_location(host) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
-fn get_cache_file_location() -> PathBuf {
-    let default = PathBuf::from(".");
-    let mut path = dirs::cache_dir().unwrap_or(default);
+/// Tokens are cached per host so that a token issued by one BMC is never
+/// sent to another.
+fn get_cache_file_location(host: &str) -> Option<PathBuf> {
+    Some(dirs::cache_dir()?.join(host_file_name("tpi_token", host)))
+}
 
-    path.push("tpi_token");
-
-    path
+/// File name for per-host state, safe for any filesystem.
+pub fn host_file_name(prefix: &str, host: &str) -> String {
+    let host: String = host
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{prefix}_{host}")
 }
 
 async fn request_token(
@@ -224,12 +242,11 @@ async fn request_token(
     match resp.status() {
         StatusCode::OK => {
             let json = resp.json::<serde_json::Value>().await?;
-            let token = get_param(&json, "id");
+            let token = get_param(&json, "id")?;
 
             if save_token {
-                if let Err(e) = cache_token(&token) {
-                    let path = get_cache_file_location();
-                    println!("Warning: failed to write to cache file {:?}: {}", path, e);
+                if let Err(e) = cache_token(host, &token) {
+                    eprintln!("Warning: failed to cache token: {e:#}");
                 }
             }
 
@@ -245,24 +262,58 @@ async fn request_token(
     }
 }
 
-fn get_param(results: &serde_json::Value, key: &str) -> String {
-    results
+fn get_param(results: &serde_json::Value, key: &str) -> Result<String> {
+    Ok(results
         .get(key)
-        .unwrap_or_else(|| panic!("API error: Expected `{key}` attribute"))
+        .with_context(|| format!("API error: Expected `{key}` attribute"))?
         .as_str()
-        .unwrap_or_else(|| panic!("API error: `{key}` value is not a string"))
-        .to_owned()
+        .with_context(|| format!("API error: `{key}` value is not a string"))?
+        .to_owned())
 }
 
-fn cache_token(token: &str) -> Result<()> {
-    let path = get_cache_file_location();
+fn cache_token(host: &str, token: &str) -> Result<()> {
+    let Some(path) = get_cache_file_location(host) else {
+        bail!("no cache directory available");
+    };
 
-    std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)?
-        .write_all(token.as_bytes())?;
+    // Remove the token file used by older versions, which was shared by all hosts.
+    if let Some(mut legacy) = dirs::cache_dir() {
+        legacy.push("tpi_token");
+        let _ = std::fs::remove_file(legacy);
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    // The token grants full BMC access: keep it private to the current user.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+
+    options
+        .open(&path)
+        .and_then(|mut f| f.write_all(token.as_bytes()))
+        .with_context(|| format!("{}", path.display()))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_post_keeps_headers() {
+        let req = Request::new("bmc".into(), ApiVersion::V1_1, (None, None), "TPI (test)").unwrap();
+        let post = req.to_post().unwrap();
+        assert_eq!(post.method(), Method::POST);
+        assert_eq!(post.headers()[USER_AGENT], "TPI (test)");
+    }
+
+    #[test]
+    fn cache_file_is_per_host() {
+        let a = get_cache_file_location("turingpi.local").unwrap();
+        let b = get_cache_file_location("[::1]:8080").unwrap();
+        assert!(a.ends_with("tpi_token_turingpi.local"));
+        assert!(b.ends_with("tpi_token____1__8080"));
+        assert_ne!(Some(a), get_cache_file_location("turingpi.local:8080"));
+    }
 }

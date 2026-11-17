@@ -45,7 +45,9 @@ pub struct Cli {
     #[arg(long, global = true, env = "TPI_USERNAME")]
     pub user: Option<String>,
 
-    /// Same as `--username`
+    /// Specify the password to log in with. Prefer the `TPI_PASSWORD` environment variable or the
+    /// interactive prompt: a password given on the command line is visible to other local users in
+    /// the process list and is saved in shell history.
     #[arg(
         long,
         name = "PASS",
@@ -54,6 +56,12 @@ pub struct Cli {
         hide_env_values = true
     )]
     pub password: Option<String>,
+
+    /// Accept any TLS certificate from the BMC, including one that differs from the certificate
+    /// trusted on first use. Dangerous: anyone able to intercept the connection can then
+    /// impersonate the BMC and capture your credentials. Use at your own risk.
+    #[arg(long, global = true)]
+    pub ignore_certificate_pinning: bool,
 
     /// Print results formatted as JSON
     #[arg(long, global = true, env = "TPI_OUTPUT_JSON")]
@@ -197,7 +205,7 @@ pub struct AdvancedArgs {
 #[derive(Args)]
 pub struct UartArgs {
     pub action: GetSet,
-    /// [possible values: 1-4], Not specifying a node selects all nodes.
+    /// [possible values: 1-4]
     #[arg(short, long)]
     #[arg(value_parser = clap::value_parser!(u8).range(1..5))]
     pub node: u8,
