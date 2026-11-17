@@ -1,5 +1,7 @@
 name: Tpi Validation Pipeline
 on: [push]
+permissions:
+  contents: read
 jobs:
 
   cargo-clippy:

@@ -2,6 +2,8 @@ name: Upload AUR
 on:
   release:
     types: [created]
+permissions:
+  contents: read
 
 jobs:
   tpi-bin:

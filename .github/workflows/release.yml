@@ -3,6 +3,8 @@ on:
   push:
     branches:
       - master
+permissions:
+  contents: read
 
 jobs:
   build-pipeline:
@@ -123,6 +125,8 @@ jobs:
 
   try-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs: debian-packages
     steps:
       - name: Checkout Code
